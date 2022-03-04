@@ -9,6 +9,10 @@ import argparse
 
 class CaseStudy:
     def __init__(self, input_directory : str, output_directory: str):
+        """
+        Initialise the class with the input and output directories.
+        Create SparkSession object and set the log level to ERROR.
+        """
         self.spark = (SparkSession
                         .builder
                         .master("local[2]")
@@ -19,6 +23,16 @@ class CaseStudy:
         self.output_directory = output_directory
 
     def create_schema(self):
+        """
+        Define the schema for each file which will be read into a 
+        dataframe object:
+        - charges.csv -> chargeSchema
+        - damages.csv -> damagesSchema
+        - endorse.csv -> endorseSchema
+        - primaryperson.csv -> primaryPersonSchema
+        - restrict.csv -> restrictSchema
+        - units.csv -> unitsSchema
+        """
         self.chargeSchema = StructType([
             StructField("CRASH_ID", IntegerType()),
             StructField("UNIT_NBR", IntegerType()),
@@ -115,7 +129,17 @@ class CaseStudy:
         ])
 
 
-    def transform_existing_schema(self, df:DataFrame, col_types:Dict[str, Union[IntegerType, StringType, FloatType]]):
+    def transform_existing_schema(self, df:DataFrame, col_types:Dict[str, 
+                        Union[IntegerType, FloatType]]):
+        """
+        Change the schema of existingcolumns into numerical type of data by replacing
+        string value "NA" from that column with NULL and convert the rest into either
+        integer or float.
+        :Params :
+            - df : The dataframe you want to transform columns in.
+            - col_types : A dictionary of column names and their desired data types 
+                            after transformation.
+        """
         cols = [
         F.col(i) if i not in col_types else F.when(F.col(i)=="NA",F.lit(None)).
                         otherwise(F.col(i)).cast(col_types[i])
@@ -124,6 +148,9 @@ class CaseStudy:
         return df.select(*cols)
 
     def read_from_csv(self):
+        """
+        Read data from CSV files into the their respective dataframes.
+        """
         self.chargesDF = self.spark.read.csv(self.input_directory+"/Charges_use.csv", 
                                 schema=self.chargeSchema, header=True)
         self.damagesDF = self.spark.read.csv(self.input_directory+"/Damages_use.csv", 
@@ -139,6 +166,13 @@ class CaseStudy:
         
 
     def analysis1(self) -> DataFrame:
+        """
+        Find the number of crashes (accidents) 
+        in which number of persons killed are male?
+
+        Assumption : Where "PRSN_GNDR_ID" == "MALE" and "PRSN_INJRY_SEV_ID" == "KILLED"
+        count the distinct "CRASH_ID"s to get the number of males killed.
+        """
         return self.primaryPersonDF.where(
                       (F.col("PRSN_INJRY_SEV_ID")=="KILLED")
                       & 
@@ -147,12 +181,26 @@ class CaseStudy:
                              alias("crashes_count"))
 
     def analysis2(self) -> DataFrame:
+        """
+        How many two wheelers are booked for crashes? 
+
+        Assumption : If "VEH_BODY_STYL_ID" is either of type "MOTORCYCLE" or "POLICE MOTORCYCLE"
+        then count the distinct number of "CRASH_ID"s to get the number of two wheelers booked
+        for crash.
+        """
         return self.unitsDF.where(F.col("VEH_BODY_STYL_ID").
                     isin(["MOTORCYCLE", "POLICE MOTORCYCLE"])).\
                     select(F.countDistinct("CRASH_ID").
                             alias("motorcycle_crash_count"))
 
     def analysis3(self) -> DataFrame:
+        """
+        Which state has highest number of accidents in which females are involved?
+
+        Assumption : Where the "PRSN_GNDR_ID" == "FEMALE" and the "DRVR_LIC_STATE_ID"
+        column contains the state so the distinct count of "CRASH_ID"s for these state 
+        ids ordered in descending will yield the output.
+        """
         return self.primaryPersonDF.where(
                 (F.col("PRSN_GNDR_ID") == "FEMALE")).\
                 groupBy("DRVR_LIC_STATE_ID").\
@@ -161,6 +209,16 @@ class CaseStudy:
                 limit(1).select("DRVR_LIC_STATE_ID")
 
     def analysis4(self) -> DataFrame:
+        """
+        Which are the Top 5th to 15th VEH_MAKE_IDs that contribute to a 
+        largest number of injuries including death?
+
+        Assumption : ("TOT_INJRY_CNT" + "DEATH_CNT") gives the sum of 
+        injured and dead people for each row which is being added up 
+        for each VEH_MAKE_ID. In the entire window when ordered by 
+        descending for injured and dead we can get a row index
+        which when filtered between 5 and 15 gives the desired result.
+        """
         vehicleIdTotalInjury = self.unitsDF.groupBy("VEH_MAKE_ID").\
                         agg(F.sum(
                             F.expr("TOT_INJRY_CNT + DEATH_CNT")).
@@ -177,18 +235,29 @@ class CaseStudy:
                             select("VEH_MAKE_ID","Sum_injury")
 
     def analysis5(self) -> DataFrame :
+        """
+        For all the body styles involved in crashes, mention the top 
+        ethnic user group of each unique body style.
+
+        Assumption : Do a right join on unitsDF with primaryPersonDF 
+        to get all the VEH_BODY_STYL_IDs, then group on VEH_BODY_STYL_ID
+        and PRSN_ETHNICITY_ID to count the crash within each of these 
+        categories and subcategories. Create a window partiton on 
+        VEH_BODY_STYL_ID to rank (dense_rank for ties) each PRSN_ETHNICITY_ID 
+        within each VEH_BODY_STYL_ID, ordered in the descending order.
+        As the ordering is done in descending, if the rank is 1 that means
+        for each VEH_BODY_STYL_ID we have got the top most involved ethnic
+        group.
+        """
         styleEthnicityData = self.primaryPersonDF.join(self.unitsDF, 
                      self.primaryPersonDF["CRASH_ID"]==self.unitsDF["CRASH_ID"],
                      "right").drop(self.unitsDF["CRASH_ID"]).\
-                     select("CRASH_ID","VEH_BODY_STYL_ID","PRSN_ETHNICITY_ID")
-
-        styleEthnicityDataGroupedDF = styleEthnicityData.\
                         groupBy("VEH_BODY_STYL_ID","PRSN_ETHNICITY_ID").\
                            agg(F.count("CRASH_ID").alias("crashes"))
 
         ethnic_win = Window.partitionBy("VEH_BODY_STYL_ID").orderBy(F.col("crashes").desc())
 
-        return styleEthnicityDataGroupedDF.withColumn(
+        return styleEthnicityData.withColumn(
                                     "Row_num", 
                                     F.dense_rank().over(ethnic_win)).\
                                     where(F.col("Row_num") == 1).\
@@ -198,6 +267,16 @@ class CaseStudy:
                                            "crashes")
 
     def analysis6(self) -> DataFrame:
+        """
+        Among the crashed cars, what are the Top 5 Zip Codes with highest 
+        number crashes with alcohols as the contributing factor to a crash 
+        (Use Driver Zip Code).
+
+        Assumption : When the contributing factors mention ALCOHOL or 
+        DRINKING then filter on those, and then count number of 
+        car crashes for each zip code. Order by in descending and
+        only take the first 5 rows to get the ZIPs.
+        """
         alcoholContributingDF = self.unitsDF.where(
         (F.col("CONTRIB_FACTR_1_ID").contains("ALCOHOL"))
             | 
@@ -213,12 +292,24 @@ class CaseStudy:
                     self.primaryPersonDF["CRASH_ID"]).\
                     drop(alcoholContributingDF["CRASH_ID"]).\
                     groupBy("DRVR_ZIP").\
-                    agg(F.countDistinct("CRASH_ID").
+                    agg(F.count("CRASH_ID").
                     alias("count_crash")).\
                     orderBy(F.col("count_crash").desc()).limit(5).\
                     select("DRVR_ZIP")
 
     def analysis7(self) -> DataFrame:
+        """
+        Count of Distinct Crash IDs where No Damaged Property was observed 
+        and Damage Level (VEH_DMAG_SCL~) is above 4 and car avails Insurance.
+
+        Assumption : Find out all the distinct CRASH_IDs where there were
+        some or the other kind of damages reported. Find the CRASH_IDs where
+        there was some kind of insurance involved ("INSURANCE" is present in
+        "FIN_RESP_TYPE_ID") and also extract the numerical damage scale.
+        Join these two datasets and exclude all matching rows because
+        only those crash ids are required which have not caused any damage.
+        Then count the unique crash ids where the damage scales were above 4.
+        """
         distinctDamageIds = self.damagesDF.select("CRASH_ID").distinct()
 
         unitsChangedDF = self.unitsDF.where(F.col("FIN_RESP_TYPE_ID").
@@ -241,6 +332,23 @@ class CaseStudy:
                                 alias("Count_distinct_crashes"))
 
     def analysis8(self) -> DataFrame:
+        """
+        Determine the Top 5 Vehicle Makes where drivers are charged with speeding related 
+        offences, has licensed Drivers, uses top 10 used vehicle colours and has car 
+        licensed with the Top 25 states with highest number of offences 
+        (to be deduced from the data).
+
+        Assumptions : colorByCountTop10 -> Get the top 10 color ids by the count of
+        crash ids. statesByOffenceTop25 -> Get the top 25 states by the count of all 
+        the CHARGEs placed. Filter all rows in Charges to get only those where charge 
+        is related to SPEEDING (("CHARGE").contains("SPEED"), filter all rows in 
+        unitsDF based on colorByCountTop10 and statesByOffenceTop25. Also filter 
+        filter those rows based on whether the person is a DRIVER and whether 
+        there is some kind of a license. Join the 3 dataframes and then
+        group on VEH_MAKE_ID to count on number of CHARGES to get the total number
+        of offences for each VEH_MAKE_ID and then get the top 5 (based on the 
+        number of charges pressed for alocholo).
+        """
         colorByCountTop10 = self.unitsDF.groupBy("VEH_COLOR_ID").count().\
                             orderBy(F.col("count").desc()).\
                             limit(10).select("VEH_COLOR_ID").\
@@ -284,6 +392,10 @@ class CaseStudy:
             orderBy(F.col("speeding_offences").desc()).limit(5)
 
     def run(self):
+        """
+        Run all the above functions one by one and save the outputs to 
+        the output directory.
+        """
         self.create_schema()
         self.read_from_csv()
         primaryPersonSchemaChanges = {"PRSN_AGE": IntegerType(), 
