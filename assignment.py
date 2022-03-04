@@ -335,8 +335,8 @@ class CaseStudy:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_dir", help="directory where data exists")
-    parser.add_argument("--output_dir", help="directory where data exists")
+    parser.add_argument("--output_dir", help="directory where output data will be written")
     args = parser.parse_args()
-    a = CaseStudy(input_directory=args.input_dir, 
+    cs_obj = CaseStudy(input_directory=args.input_dir, 
                         output_directory=args.output_dir)
-    a.run()
+    cs_obj.run()
